@@ -53,6 +53,10 @@ const RoomSchema = new mongoose.Schema({
   password: {
     type: String,
   },
+  rateDefault: {
+    type: Decimal128,
+    default: 0,
+  },
   users: Array,
   date: {
     type: Date,
@@ -204,7 +208,7 @@ app.get(`${url}/getuser`, async (req, res) => {
 });
 
 app.post(`${url}/createroom`, async (req, res) => {
-  const { name, password, owner_id } = req.body;
+  const { name, password, owner_id, rateDefault } = req.body;
 
   try {
     const ownerUser = await User.findById(owner_id);
@@ -213,10 +217,15 @@ app.post(`${url}/createroom`, async (req, res) => {
       return res.status(404).json({ message: 'Owner user not found' });
     }
 
-    const newRoom = new Room({ owner_id: ownerUser._id, name, password });
+    const newRoom = new Room({
+      owner_id: ownerUser._id,
+      name,
+      password,
+      rateDefault,
+    });
     const savedRoom = await newRoom.save();
 
-    res.status(201).json(savedRoom);
+    res.status(200).json(savedRoom);
   } catch (error) {
     console.error(error.message);
     res.status(500).json({ message: 'Something went wrong' });
@@ -311,7 +320,13 @@ app.get(`${url}/room/:id`, async (req, res) => {
       }
     }
 
-    res.status(200).json(room);
+    // Transform rateDefault from Decimal128 to number
+    const roomData = room.toObject();
+    roomData.rateDefault = roomData.rateDefault
+      ? parseFloat(roomData.rateDefault.toString())
+      : 0;
+
+    res.status(200).json(roomData);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });
