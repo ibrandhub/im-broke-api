@@ -276,6 +276,77 @@ app.post(`${url}/room/user/join`, async (req, res) => {
   }
 });
 
+app.post(`${url}/room/user/leave`, async (req, res) => {
+  const { roomId, userId } = req.body;
+  console.log('roomId', roomId);
+  console.log('userId', userId);
+
+  if (!roomId || !userId) {
+    return res.status(400).json({ message: 'roomId and userId are required' });
+  }
+
+  try {
+    const room = await Room.findById(roomId);
+    const user = await User.findById(userId);
+
+    if (!room) {
+      return res.status(404).json({ message: 'Room not found' });
+    }
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Check if the user is the owner
+    if (room.owner_id.toString() === user._id.toString()) {
+      return res.status(400).json({ message: 'Owner cannot leave the room' });
+    }
+
+    const userIndex = room.users.findIndex(
+      (u) => u._id.toString() === user._id.toString(),
+    );
+
+    if (userIndex === -1) {
+      return res.status(400).json({ message: 'User not in the room' });
+    }
+
+    room.users.splice(userIndex, 1);
+
+    await room.save();
+
+    res.status(200).json({ message: 'User left the room successfully' });
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).json({ message: 'Something went wrong' });
+  }
+});
+
+app.delete(`${url}/room/close`, async (req, res) => {
+  const { roomId, ownerId } = req.body;
+  console.log('roomId', roomId);
+
+  try {
+    const room = await Room.findById(roomId);
+
+    if (!room) {
+      return res.status(404).json({ message: 'Room not found' });
+    }
+
+    if (room.owner_id.toString() !== ownerId) {
+      return res
+        .status(403)
+        .json({ message: 'Only the owner can close the room' });
+    }
+
+    await Room.findByIdAndDelete(roomId);
+
+    res.status(200).json({ message: 'Room closed successfully' });
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).json({ message: 'Something went wrong' });
+  }
+});
+
 app.get(`${url}/room`, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
