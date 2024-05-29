@@ -96,6 +96,11 @@ const TransferLogSchema = new mongoose.Schema({
     ref: 'User',
     required: true,
   },
+  room_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Room',
+    required: true,
+  },
   isRead: {
     type: Boolean,
     default: false,
@@ -414,95 +419,8 @@ app.get(`${url}/room/:id`, async (req, res) => {
   }
 });
 
-// app.post(`${url}/transfer`, async (req, res) => {
-//   const { senderId, receiverId, amount } = req.body;
-
-//   try {
-//     const transferAmount = Decimal128.fromString(amount.toString());
-//     const transferAmountNumber = parseFloat(transferAmount.toString());
-
-//     if (isNaN(transferAmountNumber) || transferAmountNumber <= 0) {
-//       return res.status(400).json({ message: 'Invalid transfer amount' });
-//     }
-
-//     const sender = await User.findById(senderId);
-//     const receiver = await User.findById(receiverId);
-//     const senderCoin = await Coin.findOne({ user_id: senderId });
-//     const receiverCoin = await Coin.findOne({ user_id: receiverId });
-
-//     if (!sender || !receiver || !senderCoin || !receiverCoin) {
-//       return res.status(404).json({ message: 'Sender or receiver not found' });
-//     }
-
-//     const senderBalanceNumber = parseFloat(senderCoin.balance.toString());
-
-//     if (senderBalanceNumber < transferAmountNumber) {
-//       return res.status(400).json({
-//         message: `Insufficient balance ( You have balance ${senderBalanceNumber} )`,
-//       });
-//     }
-
-//     const newSenderBalance = senderBalanceNumber - transferAmountNumber;
-//     const newReceiverBalance =
-//       parseFloat(receiverCoin.balance.toString()) + transferAmountNumber;
-
-//     senderCoin.balance = Decimal128.fromString(newSenderBalance.toString());
-//     receiverCoin.balance = Decimal128.fromString(newReceiverBalance.toString());
-
-//     await senderCoin.save();
-//     await receiverCoin.save();
-
-//     const transferLog = new TransferLog({
-//       sender_id: senderId,
-//       receiver_id: receiverId,
-//       amount: transferAmount,
-//     });
-//     await transferLog.save();
-
-//     res.status(200).json({ message: 'Transfer successful' });
-//   } catch (error) {
-//     console.error(error.message);
-//     res.status(500).json({ message: 'Something went wrong' });
-//   }
-// });
-
-// app.get(`${url}/transfer/logs`, async (req, res) => {
-//   const { userId } = req.query;
-
-//   try {
-//     let logs;
-//     if (userId) {
-//       logs = await TransferLog.find({
-//         $or: [{ sender_id: userId }, { receiver_id: userId }],
-//       })
-//         .populate('sender_id', 'name email')
-//         .populate('receiver_id', 'name email');
-//     } else {
-//       logs = await TransferLog.find()
-//         .populate('sender_id', 'name email')
-//         .populate('receiver_id', 'name email');
-//     }
-
-//     res.status(200).json(logs);
-//   } catch (error) {
-//     console.error(error.message);
-//     res.status(500).json({ message: 'Something went wrong' });
-//   }
-// });
-
-// Middleware to authenticate user (example implementation)
-const authenticateUser = (req, res, next) => {
-  // Assuming you have a method to verify the user's token and get their ID
-  const userId = verifyUserToken(req.headers.authorization);
-  if (!userId) {
-    return res.status(401).json({ message: 'Unauthorized' });
-  }
-  req.user = { id: userId }; // Attach the user's ID to the request object
-  next();
-};
-
 app.post(`${url}/transfer`, async (req, res) => {
-  const { senderId, receiverId, amount } = req.body;
+  const { senderId, receiverId, amount, roomId } = req.body;
 
   try {
     const transferAmount = Decimal128.fromString(amount.toString());
@@ -545,6 +463,7 @@ app.post(`${url}/transfer`, async (req, res) => {
       owner_id: senderId,
       amount: transferAmount,
       type: 'debit',
+      room_id: roomId,
     });
     const receiverLog = new TransferLog({
       sender_id: senderId,
@@ -552,68 +471,12 @@ app.post(`${url}/transfer`, async (req, res) => {
       owner_id: receiverId,
       amount: transferAmount,
       type: 'credit',
+      room_id: roomId,
     });
 
     await Promise.all([senderLog.save(), receiverLog.save()]);
 
     res.status(200).json({ message: 'Transfer successful' });
-  } catch (error) {
-    console.error(error.message);
-    res.status(500).json({ message: 'Something went wrong' });
-  }
-});
-
-// Route to get transfer logs for the authenticated user
-app.get(`${url}/transfer/logs`, authenticateUser, async (req, res) => {
-  const userId = req.user.id; // Get the authenticated user's ID
-  const page = parseInt(req.query.page) || 1;
-  const perPage = parseInt(req.query.per_page) || 5;
-
-  if (!mongoose.Types.ObjectId.isValid(userId)) {
-    return res.status(400).json({ message: 'Invalid user ID' });
-  }
-
-  try {
-    const logs = await TransferLog.find({
-      $or: [{ sender_id: userId }, { receiver_id: userId }],
-    })
-      .populate('sender_id', 'name email')
-      .populate('receiver_id', 'name email')
-      .sort({ date: -1 }) // Sort by date in descending order
-      .skip((page - 1) * perPage)
-      .limit(perPage);
-
-    const totalLogs = await TransferLog.countDocuments({
-      $or: [{ sender_id: userId }, { receiver_id: userId }],
-    });
-
-    const unreadLogsCount = await TransferLog.countDocuments({
-      $or: [{ sender_id: userId }, { receiver_id: userId }],
-      isRead: false,
-    });
-
-    if (!logs.length) {
-      return res
-        .status(404)
-        .json({ message: 'No transfer logs found for this user' });
-    }
-
-    // Convert amount from Decimal128 to number
-    const logsWithConvertedAmount = logs.map((log) => ({
-      ...log.toObject(),
-      amount: parseFloat(log.amount.toString()),
-    }));
-
-    const response = {
-      page,
-      per_page: perPage,
-      total: totalLogs,
-      total_pages: Math.ceil(totalLogs / perPage),
-      unread_count: unreadLogsCount,
-      data: logsWithConvertedAmount,
-    };
-
-    res.status(200).json(response);
   } catch (error) {
     console.error(error.message);
     res.status(500).json({ message: 'Something went wrong' });
@@ -732,6 +595,136 @@ app.patch(`${url}/transfer/logs/user/:userId/read-all`, async (req, res) => {
     res
       .status(200)
       .json({ message: `${result.nModified} transfer logs marked as read` });
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).json({ message: 'Something went wrong' });
+  }
+});
+
+app.get(`${url}/room/:roomId/summary`, async (req, res) => {
+  const { roomId } = req.params;
+
+  try {
+    // ค้นหาห้องโดยใช้ roomId
+    const room = await Room.findById(roomId);
+
+    if (!room) {
+      return res.status(404).json({ message: 'Room not found' });
+    }
+
+    // ค้นหา log โดยใช้ roomId
+    const logs = await TransferLog.find({ room_id: roomId })
+      .populate('sender_id', 'name')
+      .populate('receiver_id', 'name')
+      .sort({ date: -1 }); // เรียงลำดับตามวันที่ล่าสุด
+
+    // สร้างโครงสร้างข้อมูลสำหรับการสรุปผล
+    const summary = {
+      room: room.name,
+      transactions: [],
+    };
+
+    // รวมรายการการโอนเงินตามคู่ของผู้ส่งและผู้รับ
+    logs.forEach((log) => {
+      const senderName = log.sender_id.name;
+      const receiverName = log.receiver_id.name;
+      const amount = parseFloat(log.amount.toString());
+
+      // ตรวจสอบว่ามีการโอนเงินระหว่างคู่ผู้ส่งและผู้รับนี้แล้วหรือไม่
+      const existingTransaction = summary.transactions.find((transaction) => {
+        return (
+          transaction.sender === senderName &&
+          transaction.receiver === receiverName
+        );
+      });
+
+      if (existingTransaction) {
+        // ถ้ามีให้เพิ่มจำนวนเงินที่โอนเข้าไปในรายการโอนเงินเดิม
+        existingTransaction.amount += amount;
+      } else {
+        // ถ้ายังไม่มีให้สร้างรายการโอนเงินใหม่
+        summary.transactions.push({
+          sender: senderName,
+          receiver: receiverName,
+          amount: amount,
+        });
+      }
+    });
+
+    res.status(200).json(summary);
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).json({ message: 'Something went wrong' });
+  }
+});
+
+app.post(`${url}/room/summary`, async (req, res) => {
+  const { userId, roomId } = req.body;
+
+  try {
+    // ตรวจสอบว่ามีค่า userId และ roomId ที่ส่งมาหรือไม่
+    if (!userId || !roomId) {
+      return res
+        .status(400)
+        .json({ message: 'User ID and Room ID are required' });
+    }
+
+    // ค้นหาห้องโดยใช้ roomId
+    const room = await Room.findById(roomId);
+
+    if (!room) {
+      return res.status(404).json({ message: 'Room not found' });
+    }
+
+    // ค้นหา log โดยใช้ userId และ roomId
+    const logs = await TransferLog.find({
+      $or: [{ sender_id: userId }, { receiver_id: userId }],
+      room_id: roomId,
+      owner_id: userId,
+      sender_id: userId,
+      type: 'debit',
+    })
+      .populate('sender_id', 'name')
+      .populate('receiver_id', 'name')
+      .populate('owner_id', 'name') // เพิ่มการ populate owner_id
+      .sort({ date: -1 }); // เรียงลำดับตามวันที่ล่าสุด
+
+    // สร้างโครงสร้างข้อมูลสำหรับการสรุปผล
+    const summary = {
+      room: room.name,
+      transactions: [],
+    };
+
+    // รวมรายการการโอนเงินตามคู่ของผู้ส่งและผู้รับ
+    logs.forEach((log) => {
+      const senderName = log.sender_id.name;
+      const receiverName = log.receiver_id.name;
+      const ownerName = log.owner_id.name; // เพิ่ม ownerName
+
+      // ตรวจสอบว่ามีการโอนเงินระหว่างคู่ผู้ส่งและผู้รับนี้แล้วหรือไม่
+      const existingTransaction = summary.transactions.find((transaction) => {
+        return (
+          transaction.sender === senderName &&
+          transaction.receiver === receiverName &&
+          transaction.owner === ownerName // เพิ่มเงื่อนไขการเปรียบเทียบ ownerName
+        );
+      });
+
+      if (existingTransaction) {
+        // ถ้ามีให้เพิ่มจำนวนเงินที่โอนเข้าไปในรายการโอนเงินเดิม
+        existingTransaction.amount += parseFloat(log.amount.toString());
+      } else {
+        // ถ้ายังไม่มีให้สร้างรายการโอนเงินใหม่
+        summary.transactions.push({
+          sender: senderName,
+          receiver: receiverName,
+          owner: ownerName, // เพิ่ม ownerName
+          amount: parseFloat(log.amount.toString()),
+        });
+      }
+    });
+
+    res.status(200).json(summary);
   } catch (error) {
     console.error(error.message);
     res.status(500).json({ message: 'Something went wrong' });
