@@ -91,10 +91,20 @@ const TransferLogSchema = new mongoose.Schema({
     ref: 'User',
     required: true,
   },
+  owner_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+  },
+  isRead: {
+    type: Boolean,
+    default: false,
+  },
   amount: {
     type: Decimal128,
     required: true,
   },
+  type: { type: String, enum: ['debit', 'credit'], required: true },
   date: {
     type: Date,
     default: Date.now,
@@ -404,6 +414,93 @@ app.get(`${url}/room/:id`, async (req, res) => {
   }
 });
 
+// app.post(`${url}/transfer`, async (req, res) => {
+//   const { senderId, receiverId, amount } = req.body;
+
+//   try {
+//     const transferAmount = Decimal128.fromString(amount.toString());
+//     const transferAmountNumber = parseFloat(transferAmount.toString());
+
+//     if (isNaN(transferAmountNumber) || transferAmountNumber <= 0) {
+//       return res.status(400).json({ message: 'Invalid transfer amount' });
+//     }
+
+//     const sender = await User.findById(senderId);
+//     const receiver = await User.findById(receiverId);
+//     const senderCoin = await Coin.findOne({ user_id: senderId });
+//     const receiverCoin = await Coin.findOne({ user_id: receiverId });
+
+//     if (!sender || !receiver || !senderCoin || !receiverCoin) {
+//       return res.status(404).json({ message: 'Sender or receiver not found' });
+//     }
+
+//     const senderBalanceNumber = parseFloat(senderCoin.balance.toString());
+
+//     if (senderBalanceNumber < transferAmountNumber) {
+//       return res.status(400).json({
+//         message: `Insufficient balance ( You have balance ${senderBalanceNumber} )`,
+//       });
+//     }
+
+//     const newSenderBalance = senderBalanceNumber - transferAmountNumber;
+//     const newReceiverBalance =
+//       parseFloat(receiverCoin.balance.toString()) + transferAmountNumber;
+
+//     senderCoin.balance = Decimal128.fromString(newSenderBalance.toString());
+//     receiverCoin.balance = Decimal128.fromString(newReceiverBalance.toString());
+
+//     await senderCoin.save();
+//     await receiverCoin.save();
+
+//     const transferLog = new TransferLog({
+//       sender_id: senderId,
+//       receiver_id: receiverId,
+//       amount: transferAmount,
+//     });
+//     await transferLog.save();
+
+//     res.status(200).json({ message: 'Transfer successful' });
+//   } catch (error) {
+//     console.error(error.message);
+//     res.status(500).json({ message: 'Something went wrong' });
+//   }
+// });
+
+// app.get(`${url}/transfer/logs`, async (req, res) => {
+//   const { userId } = req.query;
+
+//   try {
+//     let logs;
+//     if (userId) {
+//       logs = await TransferLog.find({
+//         $or: [{ sender_id: userId }, { receiver_id: userId }],
+//       })
+//         .populate('sender_id', 'name email')
+//         .populate('receiver_id', 'name email');
+//     } else {
+//       logs = await TransferLog.find()
+//         .populate('sender_id', 'name email')
+//         .populate('receiver_id', 'name email');
+//     }
+
+//     res.status(200).json(logs);
+//   } catch (error) {
+//     console.error(error.message);
+//     res.status(500).json({ message: 'Something went wrong' });
+//   }
+// });
+
+// Middleware to authenticate user (example implementation)
+const authenticateUser = (req, res, next) => {
+  // Assuming you have a method to verify the user's token and get their ID
+  const userId = verifyUserToken(req.headers.authorization);
+  if (!userId) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  req.user = { id: userId }; // Attach the user's ID to the request object
+  next();
+};
+
 app.post(`${url}/transfer`, async (req, res) => {
   const { senderId, receiverId, amount } = req.body;
 
@@ -442,12 +539,22 @@ app.post(`${url}/transfer`, async (req, res) => {
     await senderCoin.save();
     await receiverCoin.save();
 
-    const transferLog = new TransferLog({
+    const senderLog = new TransferLog({
       sender_id: senderId,
       receiver_id: receiverId,
+      owner_id: senderId,
       amount: transferAmount,
+      type: 'debit',
     });
-    await transferLog.save();
+    const receiverLog = new TransferLog({
+      sender_id: senderId,
+      receiver_id: receiverId,
+      owner_id: receiverId,
+      amount: transferAmount,
+      type: 'credit',
+    });
+
+    await Promise.all([senderLog.save(), receiverLog.save()]);
 
     res.status(200).json({ message: 'Transfer successful' });
   } catch (error) {
@@ -456,24 +563,175 @@ app.post(`${url}/transfer`, async (req, res) => {
   }
 });
 
-app.get(`${url}/transfer/logs`, async (req, res) => {
-  const { userId } = req.query;
+// Route to get transfer logs for the authenticated user
+app.get(`${url}/transfer/logs`, authenticateUser, async (req, res) => {
+  const userId = req.user.id; // Get the authenticated user's ID
+  const page = parseInt(req.query.page) || 1;
+  const perPage = parseInt(req.query.per_page) || 5;
+
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    return res.status(400).json({ message: 'Invalid user ID' });
+  }
 
   try {
-    let logs;
-    if (userId) {
-      logs = await TransferLog.find({
-        $or: [{ sender_id: userId }, { receiver_id: userId }],
-      })
-        .populate('sender_id', 'name email')
-        .populate('receiver_id', 'name email');
-    } else {
-      logs = await TransferLog.find()
-        .populate('sender_id', 'name email')
-        .populate('receiver_id', 'name email');
+    const logs = await TransferLog.find({
+      $or: [{ sender_id: userId }, { receiver_id: userId }],
+    })
+      .populate('sender_id', 'name email')
+      .populate('receiver_id', 'name email')
+      .sort({ date: -1 }) // Sort by date in descending order
+      .skip((page - 1) * perPage)
+      .limit(perPage);
+
+    const totalLogs = await TransferLog.countDocuments({
+      $or: [{ sender_id: userId }, { receiver_id: userId }],
+    });
+
+    const unreadLogsCount = await TransferLog.countDocuments({
+      $or: [{ sender_id: userId }, { receiver_id: userId }],
+      isRead: false,
+    });
+
+    if (!logs.length) {
+      return res
+        .status(404)
+        .json({ message: 'No transfer logs found for this user' });
     }
 
-    res.status(200).json(logs);
+    // Convert amount from Decimal128 to number
+    const logsWithConvertedAmount = logs.map((log) => ({
+      ...log.toObject(),
+      amount: parseFloat(log.amount.toString()),
+    }));
+
+    const response = {
+      page,
+      per_page: perPage,
+      total: totalLogs,
+      total_pages: Math.ceil(totalLogs / perPage),
+      unread_count: unreadLogsCount,
+      data: logsWithConvertedAmount,
+    };
+
+    res.status(200).json(response);
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).json({ message: 'Something went wrong' });
+  }
+});
+
+app.get(`${url}/transfer/logs/user/:userId`, async (req, res) => {
+  const { userId } = req.params;
+  const page = parseInt(req.query.page) || 1;
+  const perPage = parseInt(req.query.per_page) || 5;
+
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    return res.status(400).json({ message: 'Invalid user ID' });
+  }
+
+  try {
+    const logs = await TransferLog.find({
+      $or: [{ sender_id: userId }, { receiver_id: userId }],
+      owner_id: userId, // กรองด้วย owner_id เพื่อแสดงเฉพาะ log ที่เป็นเจ้าของของผู้ใช้
+    })
+      .populate('sender_id', 'name email')
+      .populate('receiver_id', 'name email')
+      .sort({ date: -1 }) // เรียงลำดับตามวันที่จากล่างขึ้นบน
+      .skip((page - 1) * perPage)
+      .limit(perPage);
+
+    const totalLogs = await TransferLog.countDocuments({
+      $or: [{ sender_id: userId }, { receiver_id: userId }],
+      owner_id: userId, // กรองด้วย owner_id เพื่อนับจำนวน log เฉพาะที่เป็นเจ้าของของผู้ใช้
+    });
+
+    const unreadLogsCount = await TransferLog.countDocuments({
+      $or: [{ sender_id: userId }, { receiver_id: userId }],
+      owner_id: userId, // กรองด้วย owner_id เพื่อนับจำนวน log ที่ยังไม่ได้อ่านเฉพาะที่เป็นเจ้าของของผู้ใช้
+      isRead: false,
+    });
+
+    if (!logs.length) {
+      return res
+        .status(404)
+        .json({ message: 'No transfer logs found for this user' });
+    }
+
+    // Convert amount from Decimal128 to number
+    const logsWithConvertedAmount = logs.map((log) => ({
+      ...log.toObject(),
+      amount: parseFloat(log.amount.toString()),
+    }));
+
+    const response = {
+      page,
+      per_page: perPage,
+      total: totalLogs,
+      total_pages: Math.ceil(totalLogs / perPage),
+      unread_count: unreadLogsCount,
+      data: logsWithConvertedAmount,
+    };
+
+    res.status(200).json(response);
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).json({ message: 'Something went wrong' });
+  }
+});
+
+app.patch(`${url}/transfer/logs/:logId/read`, async (req, res) => {
+  const { logId } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(logId)) {
+    return res.status(400).json({ message: 'Invalid log ID' });
+  }
+
+  try {
+    // Find the transfer log by ID and update its isRead property to true
+    const transferLog = await TransferLog.findByIdAndUpdate(
+      logId,
+      { isRead: true },
+      { new: true },
+    );
+
+    if (!transferLog) {
+      return res.status(404).json({ message: 'Transfer log not found' });
+    }
+
+    // Return the updated transfer log
+    res.status(200).json(transferLog);
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).json({ message: 'Something went wrong' });
+  }
+});
+
+app.patch(`${url}/transfer/logs/user/:userId/read-all`, async (req, res) => {
+  const { userId } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    return res.status(400).json({ message: 'Invalid user ID' });
+  }
+
+  try {
+    // Update all transfer logs associated with the user to set isRead to true
+    const result = await TransferLog.updateMany(
+      {
+        $or: [{ sender_id: userId }, { receiver_id: userId }],
+        isRead: false,
+      },
+      { isRead: true },
+    );
+
+    if (result.nModified === 0) {
+      return res
+        .status(404)
+        .json({ message: 'No unread transfer logs found for this user' });
+    }
+
+    res
+      .status(200)
+      .json({ message: `${result.nModified} transfer logs marked as read` });
   } catch (error) {
     console.error(error.message);
     res.status(500).json({ message: 'Something went wrong' });
