@@ -99,7 +99,6 @@ const TransferLogSchema = new mongoose.Schema({
   room_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Room',
-    required: true,
   },
   isRead: {
     type: Boolean,
@@ -725,6 +724,58 @@ app.post(`${url}/room/summary`, async (req, res) => {
     });
 
     res.status(200).json(summary);
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).json({ message: 'Something went wrong' });
+  }
+});
+
+app.get(`${url}/ranking`, async (req, res) => {
+  try {
+    // Aggregate the coin balances for each user
+    const ranking = await Coin.aggregate([
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'user_id',
+          foreignField: '_id',
+          as: 'user',
+        },
+      },
+      {
+        $unwind: '$user',
+      },
+      {
+        $project: {
+          userId: '$user._id',
+          name: '$user.name',
+          email: '$user.email',
+          totalBalance: { $toDouble: '$balance' },
+        },
+      },
+      {
+        $sort: { totalBalance: -1 },
+      },
+    ]);
+
+    // Calculate ranks considering ties
+    let rank = 0;
+    let previousBalance = null;
+
+    const rankingWithPosition = ranking.map((item, index) => {
+      if (previousBalance == null || previousBalance != item.totalBalance) {
+        previousBalance = item.totalBalance;
+        rank++;
+      }
+
+      return {
+        ...item,
+        no: rank,
+      };
+    });
+
+    // Return the results
+    res.status(200).json({ ranking: rankingWithPosition });
   } catch (error) {
     console.error(error.message);
     res.status(500).json({ message: 'Something went wrong' });
